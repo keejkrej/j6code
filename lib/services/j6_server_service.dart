@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/j6_entities.dart';
+import 'j6_logger.dart';
 
 class J6ServerService {
   static const int serverPort = 3773;
@@ -46,7 +46,10 @@ class J6ServerService {
   String? mintWebSocketTicket() {
     try {
       final keyFile = File(signingKeyPath);
-      if (!keyFile.existsSync()) return null;
+      if (!keyFile.existsSync()) {
+        J6Logger.warn('Signing key file not found at: $signingKeyPath');
+        return null;
+      }
       final signingKey = keyFile.readAsBytesSync();
 
       const sessionId = "4c1f5c3b-a420-414e-8355-54cdd847d53a";
@@ -69,8 +72,8 @@ class J6ServerService {
       final signatureBase64Url = base64Url.encode(digest.bytes).replaceAll('=', '');
 
       return '$payloadBase64Url.$signatureBase64Url';
-    } catch (e) {
-      if (kDebugMode) print("Error minting websocket ticket: $e");
+    } catch (e, stack) {
+      J6Logger.error('Error minting websocket ticket', e, stack);
       return null;
     }
   }
@@ -81,10 +84,12 @@ class J6ServerService {
         ? 'ws://$serverHost:$serverPort/ws?wsTicket=$ticket'
         : 'ws://$serverHost:$serverPort/ws';
 
+    J6Logger.info('Connecting to WebSocket server at ws://$serverHost:$serverPort/ws');
     try {
       _channel = WebSocketChannel.connect(Uri.parse(uriStr));
       _isConnected = true;
       _connectionStateController.add(true);
+      J6Logger.info('WebSocket connected successfully');
 
       _channel!.stream.listen(
         (data) {
@@ -98,15 +103,18 @@ class J6ServerService {
           } catch (_) {}
         },
         onError: (err) {
+          J6Logger.warn('WebSocket stream error: $err');
           _isConnected = false;
           _connectionStateController.add(false);
         },
         onDone: () {
+          J6Logger.info('WebSocket stream closed');
           _isConnected = false;
           _connectionStateController.add(false);
         },
       );
-    } catch (e) {
+    } catch (e, stack) {
+      J6Logger.error('Failed to establish WebSocket connection', e, stack);
       _isConnected = false;
       _connectionStateController.add(false);
     }
@@ -143,8 +151,8 @@ class J6ServerService {
           } catch (_) {}
         }
       }
-    } catch (e) {
-      if (kDebugMode) print("Error loading providers: $e");
+    } catch (e, stack) {
+      J6Logger.error('Error loading AI providers', e, stack);
     }
 
     if (providers.isEmpty) {
@@ -178,6 +186,7 @@ class J6ServerService {
       ]);
     }
 
+    J6Logger.info('Discovered ${providers.length} AI providers: ${providers.map((p) => p.displayName).join(', ')}');
     return providers;
   }
 
@@ -185,7 +194,10 @@ class J6ServerService {
   Future<J6Project?> openFolderAsProject(String folderPath) async {
     try {
       final dir = Directory(folderPath);
-      if (!dir.existsSync()) return null;
+      if (!dir.existsSync()) {
+        J6Logger.warn('Cannot open non-existent directory: $folderPath');
+        return null;
+      }
 
       final normalizedPath = dir.path.replaceAll('/', '\\');
       final folderName = dir.uri.pathSegments.where((s) => s.isNotEmpty).last;
@@ -200,6 +212,7 @@ class J6ServerService {
 
       if (existing.isNotEmpty) {
         final row = existing.first;
+        J6Logger.info('Found existing project for $normalizedPath -> id: ${row['project_id']}');
         return J6Project(
           projectId: row['project_id'].toString(),
           title: row['title'].toString(),
@@ -217,6 +230,8 @@ class J6ServerService {
         [id, folderName, normalizedPath, '[]', now, now],
       );
 
+      J6Logger.info('Registered new project: $folderName ($id) at $normalizedPath (git: $isGit)');
+
       return J6Project(
         projectId: id,
         title: folderName,
@@ -225,8 +240,8 @@ class J6ServerService {
         updatedAt: DateTime.parse(now),
         isGitRepo: isGit,
       );
-    } catch (e) {
-      if (kDebugMode) print("Error opening folder: $e");
+    } catch (e, stack) {
+      J6Logger.error('Error opening folder as project', e, stack);
     }
     return null;
   }
@@ -256,8 +271,8 @@ class J6ServerService {
         ));
       }
       return list;
-    } catch (e) {
-      if (kDebugMode) print("Error fetching projects via sqlite3: $e");
+    } catch (e, stack) {
+      J6Logger.error('Error fetching projects from sqlite', e, stack);
     }
     return [];
   }
@@ -286,8 +301,8 @@ class J6ServerService {
         ));
       }
       return list;
-    } catch (e) {
-      if (kDebugMode) print("Error fetching threads via sqlite3: $e");
+    } catch (e, stack) {
+      J6Logger.error('Error fetching threads from sqlite', e, stack);
     }
     return [];
   }
@@ -312,8 +327,8 @@ class J6ServerService {
         ));
       }
       return list;
-    } catch (e) {
-      if (kDebugMode) print("Error fetching messages via sqlite3: $e");
+    } catch (e, stack) {
+      J6Logger.error('Error fetching messages from sqlite', e, stack);
     }
     return [];
   }
@@ -346,8 +361,8 @@ class J6ServerService {
         ));
       }
       return list;
-    } catch (e) {
-      if (kDebugMode) print("Error fetching activities via sqlite3: $e");
+    } catch (e, stack) {
+      J6Logger.error('Error fetching activities from sqlite', e, stack);
     }
     return [];
   }
@@ -364,9 +379,10 @@ class J6ServerService {
         'INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
         [id, projectId, title, now, now],
       );
+      J6Logger.info('Created thread: $id ("$title") for project $projectId');
       return id;
-    } catch (e) {
-      if (kDebugMode) print("Error creating thread via sqlite3: $e");
+    } catch (e, stack) {
+      J6Logger.error('Error creating thread via sqlite3', e, stack);
     }
     return null;
   }
@@ -409,9 +425,10 @@ class J6ServerService {
         [actId, threadId, 'tool.updated', 'Dispatched to $providerId', jsonEncode(payload), now],
       );
 
+      J6Logger.info('Successfully persisted prompt message ($msgId) and dispatched activity ($actId)');
       return true;
-    } catch (e) {
-      if (kDebugMode) print("Error sending prompt via sqlite3: $e");
+    } catch (e, stack) {
+      J6Logger.error('Error sending prompt via sqlite3', e, stack);
       return false;
     }
   }

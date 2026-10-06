@@ -5,12 +5,16 @@ import 'package:file_picker/file_picker.dart';
 import 'theme/app_theme.dart';
 import 'models/j6_entities.dart';
 import 'services/j6_server_service.dart';
+import 'services/j6_logger.dart';
 import 'widgets/sidebar_widget.dart';
 import 'widgets/message_item_widget.dart';
 import 'widgets/activity_item_widget.dart';
 import 'widgets/composer_widget.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  J6Logger.init();
+  J6Logger.info('Starting j6code application...');
   runApp(const ProviderScope(child: J6CodeApp()));
 }
 
@@ -60,8 +64,10 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Future<void> _initApp() async {
+    J6Logger.info('Initializing MainScreen state...');
     await _serverService.connect();
     _serverService.onConnectionStateChanged.listen((connected) {
+      J6Logger.info('WebSocket connection state changed: $connected');
       if (mounted) setState(() => _isServerConnected = connected);
     });
 
@@ -116,6 +122,8 @@ class _MainScreenState extends State<MainScreen> {
       activities = await _serverService.fetchThreadActivities(currentThreadId);
     }
 
+    J6Logger.info('Loaded initial data: ${projects.length} projects, ${threads.length} threads for current project ($currentProjectId), ${messages.length} messages');
+
     if (mounted) {
       setState(() {
         _projects = projects;
@@ -158,6 +166,7 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   void _selectThread(String threadId) async {
+    J6Logger.info('Selected thread: $threadId');
     setState(() {
       _selectedThreadId = threadId;
       _messages = [];
@@ -176,6 +185,7 @@ class _MainScreenState extends State<MainScreen> {
 
   void _handleNewThread() async {
     if (_selectedProjectId == null) return;
+    J6Logger.info('Creating new thread for project $_selectedProjectId');
     final newId = await _serverService.createThread(
       projectId: _selectedProjectId!,
       title: 'New Coding Task',
@@ -187,11 +197,13 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Future<void> _handleOpenFolder() async {
+    J6Logger.info('Opening folder picker dialog...');
     final selectedDirectory = await FilePicker.getDirectoryPath(
       dialogTitle: 'Select Git Repository / Workspace Folder',
     );
 
     if (selectedDirectory != null && selectedDirectory.isNotEmpty) {
+      J6Logger.info('User selected directory: $selectedDirectory');
       final project = await _serverService.openFolderAsProject(selectedDirectory);
       if (project != null) {
         final projects = await _serverService.fetchProjects();
@@ -254,6 +266,8 @@ class _MainScreenState extends State<MainScreen> {
 
     final providerId = _selectedProvider?.id ?? 'grok';
     final modelSlug = _selectedModel?.slug ?? 'grok-build';
+
+    J6Logger.info('Sending prompt to $providerId ($modelSlug) in thread $threadId: ${prompt.replaceAll('\n', ' ')}');
 
     await _serverService.sendPrompt(
       threadId: threadId,

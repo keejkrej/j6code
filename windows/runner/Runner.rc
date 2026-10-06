@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.keejkrej.t3code" "\0"
-            VALUE "FileDescription", "t3code" "\0"
+            VALUE "CompanyName", "com.keejkrej.j6code" "\0"
+            VALUE "FileDescription", "j6code" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "t3code" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.keejkrej.t3code. All rights reserved." "\0"
-            VALUE "OriginalFilename", "t3code.exe" "\0"
-            VALUE "ProductName", "t3code" "\0"
+            VALUE "InternalName", "j6code" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 com.keejkrej.j6code. All rights reserved." "\0"
+            VALUE "OriginalFilename", "j6code.exe" "\0"
+            VALUE "ProductName", "j6code" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END
