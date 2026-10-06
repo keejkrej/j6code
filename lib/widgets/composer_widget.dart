@@ -7,8 +7,8 @@ class ComposerWidget extends StatefulWidget {
   final List<J6Provider> providers;
   final J6Provider? selectedProvider;
   final J6Model? selectedModel;
-  final Function(J6Provider provider, J6Model model) onSelectModel;
-  final Function(String prompt) onSendPrompt;
+  final Function(J6Provider, J6Model) onSelectModel;
+  final Function(String) onSendPrompt;
   final bool isSending;
   final String activeWorkspaceName;
 
@@ -29,13 +29,36 @@ class ComposerWidget extends StatefulWidget {
 
 class _ComposerWidgetState extends State<ComposerWidget> {
   final TextEditingController _controller = TextEditingController();
-  final FocusNode _focusNode = FocusNode();
+  late final FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode = FocusNode(onKeyEvent: _handleKeyEvent);
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.enter &&
+        !HardwareKeyboard.instance.isShiftPressed) {
+      _handleSend();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
 
   void _handleSend() {
     final text = _controller.text.trim();
     if (text.isEmpty || widget.isSending) return;
-    widget.onSendPrompt(text);
     _controller.clear();
+    widget.onSendPrompt(text);
   }
 
   void _showModelPicker(BuildContext context) {
@@ -48,25 +71,21 @@ class _ComposerWidgetState extends State<ComposerWidget> {
       builder: (ctx) {
         return Container(
           padding: const EdgeInsets.all(16),
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.7,
-          ),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Icon(Icons.hub_rounded, size: 20, color: AppTheme.accent),
-                  const SizedBox(width: 8),
                   const Text(
                     'Select AI Engine & Model',
                     style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
                       color: AppTheme.textPrimary,
                     ),
                   ),
-                  const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.close, size: 18),
                     onPressed: () => Navigator.pop(ctx),
@@ -74,71 +93,68 @@ class _ComposerWidgetState extends State<ComposerWidget> {
                 ],
               ),
               const SizedBox(height: 12),
-              const Text(
-                'Connect to Grok Build, OpenCode, Anti Gravity ACP, or Claude models for coding tasks.',
-                style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
-              ),
-              const Divider(height: 24),
-              Expanded(
-                child: ListView.builder(
-                  itemCount: widget.providers.length,
-                  itemBuilder: (context, pIndex) {
-                    final p = widget.providers[pIndex];
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
-                          child: Text(
-                            p.displayName.toUpperCase(),
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1,
-                              color: AppTheme.accent,
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: widget.providers.map((p) {
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: AppTheme.surfaceSubtle,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.borderSubtle),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.psychology, size: 16, color: AppTheme.accent),
+                                const SizedBox(width: 8),
+                                Text(
+                                  p.displayName,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppTheme.textPrimary,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                        ),
-                        ...p.models.map((m) {
-                          final isSelected = widget.selectedProvider?.id == p.id &&
-                              widget.selectedModel?.slug == m.slug;
-                          return ListTile(
-                            dense: true,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            selected: isSelected,
-                            selectedTileColor: AppTheme.surfaceHover,
-                            leading: Icon(
-                              Icons.auto_awesome_rounded,
-                              size: 16,
-                              color: isSelected ? AppTheme.accent : AppTheme.textMuted,
-                            ),
-                            title: Text(
-                              m.name,
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                                color: isSelected ? AppTheme.textPrimary : AppTheme.textSecondary,
+                          const Divider(height: 1),
+                          ...p.models.map((m) {
+                            final isSelected = widget.selectedProvider?.id == p.id &&
+                                widget.selectedModel?.slug == m.slug;
+                            return ListTile(
+                              dense: true,
+                              title: Text(
+                                m.name,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                                  color: isSelected ? AppTheme.accent : AppTheme.textSecondary,
+                                ),
                               ),
-                            ),
-                            subtitle: Text(
-                              m.slug,
-                              style: const TextStyle(fontSize: 10, color: AppTheme.textMuted),
-                            ),
-                            trailing: isSelected
-                                ? const Icon(Icons.check_circle_rounded, size: 16, color: AppTheme.accent)
-                                : null,
-                            onTap: () {
-                              widget.onSelectModel(p, m);
-                              Navigator.pop(ctx);
-                            },
-                          );
-                        }),
-                        const SizedBox(height: 10),
-                      ],
+                              subtitle: Text(
+                                m.slug,
+                                style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                              ),
+                              trailing: isSelected
+                                  ? const Icon(Icons.check_circle, size: 16, color: AppTheme.accent)
+                                  : null,
+                              onTap: () {
+                                widget.onSelectModel(p, m);
+                                Navigator.pop(ctx);
+                              },
+                            );
+                          }),
+                        ],
+                      ),
                     );
-                  },
+                  }).toList(),
                 ),
               ),
             ],
@@ -149,23 +165,16 @@ class _ComposerWidgetState extends State<ComposerWidget> {
   }
 
   @override
-  void dispose() {
-    _controller.dispose();
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final activeModelName = widget.selectedModel?.name ?? 'Grok Build';
-    final activeProviderName = widget.selectedProvider?.displayName ?? 'Grok';
+    final activeProviderName = widget.selectedProvider?.displayName ?? 'AI Engine';
+    final activeModelName = widget.selectedModel?.name ?? 'Select Model';
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: const BoxDecoration(
         color: AppTheme.surface,
-        border: Border(top: BorderSide(color: AppTheme.border, width: 1)),
+        border: Border(top: BorderSide(color: AppTheme.border)),
       ),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -179,34 +188,24 @@ class _ComposerWidgetState extends State<ComposerWidget> {
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             child: Column(
               children: [
-                KeyboardListener(
-                  focusNode: FocusNode(),
-                  onKeyEvent: (event) {
-                    if (event is KeyDownEvent &&
-                        event.logicalKey == LogicalKeyboardKey.enter &&
-                        !HardwareKeyboard.instance.isShiftPressed) {
-                      _handleSend();
-                    }
-                  },
-                  child: TextField(
-                    controller: _controller,
-                    focusNode: _focusNode,
-                    minLines: 1,
-                    maxLines: 6,
-                    style: const TextStyle(
-                      fontSize: 13.5,
-                      color: AppTheme.textPrimary,
+                TextField(
+                  controller: _controller,
+                  focusNode: _focusNode,
+                  minLines: 1,
+                  maxLines: 6,
+                  style: const TextStyle(
+                    fontSize: 13.5,
+                    color: AppTheme.textPrimary,
+                  ),
+                  decoration: const InputDecoration(
+                    hintText: 'Ask j6code to code, test, or refactor in this repo... (Shift+Enter for newline)',
+                    hintStyle: TextStyle(
+                      fontSize: 13,
+                      color: AppTheme.textMuted,
                     ),
-                    decoration: const InputDecoration(
-                      hintText: 'Ask j6code to code, test, or refactor in this repo... (Shift+Enter for newline)',
-                      hintStyle: TextStyle(
-                        fontSize: 13,
-                        color: AppTheme.textMuted,
-                      ),
-                      isDense: true,
-                      border: InputBorder.none,
-                      contentPadding: EdgeInsets.zero,
-                    ),
+                    isDense: true,
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.zero,
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -242,47 +241,70 @@ class _ComposerWidgetState extends State<ComposerWidget> {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    // Active Workspace Tag
+                    const SizedBox(width: 10),
+                    // Active Workspace Folder Pill
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
-                        color: AppTheme.surfaceHover,
+                        color: AppTheme.surfaceSubtle,
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(color: AppTheme.borderSubtle),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.folder_outlined, size: 12, color: AppTheme.textMuted),
-                          const SizedBox(width: 4),
+                          const Icon(Icons.folder_open, size: 12, color: AppTheme.textMuted),
+                          const SizedBox(width: 5),
                           Text(
-                            widget.activeWorkspaceName,
+                            widget.activeWorkspaceName.isNotEmpty
+                                ? widget.activeWorkspaceName
+                                : 'No workspace',
                             style: const TextStyle(
                               fontSize: 11,
-                              color: AppTheme.textMuted,
+                              color: AppTheme.textSecondary,
                             ),
                           ),
                         ],
                       ),
                     ),
                     const Spacer(),
-                    // Send button
-                    IconButton(
-                      icon: widget.isSending
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(AppTheme.accent),
+                    // Send Button
+                    InkWell(
+                      onTap: widget.isSending ? null : _handleSend,
+                      borderRadius: BorderRadius.circular(6),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: widget.isSending
+                              ? AppTheme.accent.withAlpha(100)
+                              : AppTheme.accent,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (widget.isSending) ...[
+                              const SizedBox(
+                                width: 12,
+                                height: 12,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                ),
                               ),
-                            )
-                          : const Icon(Icons.arrow_upward_rounded, size: 18),
-                      color: AppTheme.accent,
-                      onPressed: widget.isSending ? null : _handleSend,
-                      tooltip: 'Send prompt to agent (Enter)',
-                      splashRadius: 18,
+                              const SizedBox(width: 6),
+                            ],
+                            const Text(
+                              'Send',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   ],
                 ),

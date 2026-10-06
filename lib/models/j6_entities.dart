@@ -1,4 +1,3 @@
-import 'dart:convert';
 
 class J6Project {
   final String projectId;
@@ -35,6 +34,7 @@ class J6Thread {
   final String title;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final String? modelSelectionJson;
 
   J6Thread({
     required this.threadId,
@@ -42,6 +42,7 @@ class J6Thread {
     required this.title,
     required this.createdAt,
     required this.updatedAt,
+    this.modelSelectionJson,
   });
 
   factory J6Thread.fromJson(Map<String, dynamic> json) {
@@ -51,6 +52,7 @@ class J6Thread {
       title: json['title'] ?? 'Untitled Conversation',
       createdAt: DateTime.tryParse(json['created_at'] ?? '') ?? DateTime.now(),
       updatedAt: DateTime.tryParse(json['updated_at'] ?? '') ?? DateTime.now(),
+      modelSelectionJson: json['model_selection_json']?.toString(),
     );
   }
 }
@@ -102,18 +104,12 @@ class J6Activity {
   });
 
   factory J6Activity.fromJson(Map<String, dynamic> json) {
-    Map<String, dynamic> p = {};
-    if (json['payload_json'] != null) {
-      try {
-        p = jsonDecode(json['payload_json']);
-      } catch (_) {}
-    }
     return J6Activity(
       activityId: json['activity_id'] ?? '',
       threadId: json['thread_id'] ?? '',
       kind: json['kind'] ?? '',
       summary: json['summary'] ?? '',
-      payload: p,
+      payload: json['payload'] is Map ? json['payload'] : {},
       createdAt: DateTime.tryParse(json['created_at'] ?? '') ?? DateTime.now(),
     );
   }
@@ -123,20 +119,19 @@ class J6Model {
   final String slug;
   final String name;
 
-  const J6Model({
-    required this.slug,
-    required this.name,
-  });
+  J6Model({required this.slug, required this.name});
 }
 
 class J6Provider {
   final String id;
-  final String displayName;
+  final String name;
   final List<J6Model> models;
 
-  const J6Provider({
+  J6Provider({
     required this.id,
-    required this.displayName,
+    required this.name,
     required this.models,
   });
+
+  String get displayName => name;
 }

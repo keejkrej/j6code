@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
@@ -48,10 +50,11 @@ class _MainScreenState extends State<MainScreen> {
   List<J6Activity> _activities = [];
   List<J6Provider> _providers = [];
   
-  J6Provider? _selectedProvider;
-  J6Model? _selectedModel;
   String? _selectedProjectId;
   String? _selectedThreadId;
+  J6Provider? _selectedProvider;
+  J6Model? _selectedModel;
+  
   bool _isServerConnected = false;
   bool _isSending = false;
   Timer? _refreshTimer;
@@ -60,30 +63,32 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
-    _initApp();
+    _initServices();
   }
 
-  Future<void> _initApp() async {
-    J6Logger.info('Initializing MainScreen state...');
+  Future<void> _initServices() async {
+    J6Logger.info('Initializing services and connecting to backend...');
     await _serverService.connect();
+    setState(() => _isServerConnected = _serverService.isConnected);
+
     _serverService.onConnectionStateChanged.listen((connected) {
       J6Logger.info('WebSocket connection state changed: $connected');
       if (mounted) setState(() => _isServerConnected = connected);
     });
 
-    // Load available engines & models (Grok, OpenCode, Antigravity, etc.)
+    // Load available engines & models (Antigravity, Grok, OpenCode, Claude, etc.)
     final providers = await _serverService.loadAvailableProviders();
     J6Provider? defaultProvider;
     J6Model? defaultModel;
 
     if (providers.isNotEmpty) {
       defaultProvider = providers.firstWhere(
-        (p) => p.id == 'grok' || p.id == 'antigravity',
+        (p) => p.id == 'antigravity' || p.id == 'grok',
         orElse: () => providers.first,
       );
       if (defaultProvider.models.isNotEmpty) {
         defaultModel = defaultProvider.models.firstWhere(
-          (m) => m.name.contains('Build') || m.name.contains('High'),
+          (m) => m.name.contains('Flash') || m.name.contains('High') || m.name.contains('Build'),
           orElse: () => defaultProvider!.models.first,
         );
       }
@@ -142,7 +147,6 @@ class _MainScreenState extends State<MainScreen> {
       final messages = await _serverService.fetchThreadMessages(_selectedThreadId!);
       final activities = await _serverService.fetchThreadActivities(_selectedThreadId!);
       final threads = await _serverService.fetchThreads(_selectedProjectId);
-
       if (mounted) {
         setState(() {
           _messages = messages;
@@ -167,6 +171,27 @@ class _MainScreenState extends State<MainScreen> {
 
   void _selectThread(String threadId) async {
     J6Logger.info('Selected thread: $threadId');
+
+    // Auto-align model selection with thread's existing driver if bound
+    final th = _threads.where((t) => t.threadId == threadId).firstOrNull;
+    if (th?.modelSelectionJson != null) {
+      try {
+        final parsed = jsonDecode(th!.modelSelectionJson!);
+        if (parsed is Map && parsed['instanceId'] != null) {
+          final inst = parsed['instanceId'].toString();
+          final mod = parsed['model']?.toString();
+          final matchingProvider = _providers.where((p) => p.id == inst).firstOrNull;
+          if (matchingProvider != null) {
+            _selectedProvider = matchingProvider;
+            final matchingModel = matchingProvider.models.where((m) => m.slug == mod).firstOrNull;
+            if (matchingModel != null) {
+              _selectedModel = matchingModel;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
     setState(() {
       _selectedThreadId = threadId;
       _messages = [];
@@ -189,6 +214,8 @@ class _MainScreenState extends State<MainScreen> {
     final newId = await _serverService.createThread(
       projectId: _selectedProjectId!,
       title: 'New Coding Task',
+      providerId: _selectedProvider?.id ?? 'antigravity',
+      modelSlug: _selectedModel?.slug ?? 'gemini-3.8-flash-high',
     );
     if (newId != null) {
       await _loadInitialData();
@@ -211,26 +238,20 @@ class _MainScreenState extends State<MainScreen> {
           _projects = projects;
           _selectedProjectId = project.projectId;
         });
-        final threads = await _serverService.fetchThreads(project.projectId);
-        if (threads.isNotEmpty) {
-          _selectThread(threads.first.threadId);
-        } else {
-          _handleNewThread();
-        }
+        await _loadInitialData();
       }
     }
   }
 
-  void _handleSendPrompt(String prompt) async {
-    // If no project selected yet, create or fallback to default
-    String projectId = _selectedProjectId ?? '';
-    if (projectId.isEmpty) {
+  Future<void> _handleSendPrompt(String prompt) async {
+    if (prompt.isEmpty) return;
+
+    String? projectId = _selectedProjectId;
+    if (projectId == null) {
       if (_projects.isNotEmpty) {
         projectId = _projects.first.projectId;
       } else {
-        final newProj = await _serverService.openFolderAsProject(
-          'C:\\Users\\ctyja\\workspace\\j6code',
-        );
+        final newProj = await _serverService.openFolderAsProject(Platform.environment['USERPROFILE'] ?? 'C:\\');
         projectId = newProj?.projectId ?? 'proj_default';
       }
       setState(() => _selectedProjectId = projectId);
@@ -239,11 +260,16 @@ class _MainScreenState extends State<MainScreen> {
     setState(() => _isSending = true);
 
     String threadId = _selectedThreadId ?? '';
+    final providerId = _selectedProvider?.id ?? 'antigravity';
+    final modelSlug = _selectedModel?.slug ?? 'gemini-3.8-flash-high';
+
     if (threadId.isEmpty) {
       final title = prompt.length > 35 ? '${prompt.substring(0, 35)}...' : prompt;
       final created = await _serverService.createThread(
         projectId: projectId,
         title: title,
+        providerId: providerId,
+        modelSlug: modelSlug,
       );
       threadId = created ?? 'th_${DateTime.now().millisecondsSinceEpoch}';
       setState(() => _selectedThreadId = threadId);
@@ -263,9 +289,6 @@ class _MainScreenState extends State<MainScreen> {
       _messages = [..._messages, optimisticMsg];
     });
     _scrollToBottom();
-
-    final providerId = _selectedProvider?.id ?? 'grok';
-    final modelSlug = _selectedModel?.slug ?? 'grok-build';
 
     J6Logger.info('Sending prompt to $providerId ($modelSlug) in thread $threadId: ${prompt.replaceAll('\n', ' ')}');
 
@@ -291,10 +314,57 @@ class _MainScreenState extends State<MainScreen> {
     super.dispose();
   }
 
+  /// Groups consecutive activities into single collapsible cards
+  List<dynamic> _buildGroupedTimeline(List<J6Message> messages, List<J6Activity> activities) {
+    final List<dynamic> rawItems = [...messages, ...activities];
+    rawItems.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
+    final List<dynamic> grouped = [];
+    List<J6Activity> currentActivityGroup = [];
+    String? currentGroupType;
+
+    for (final item in rawItems) {
+      if (item is J6Message) {
+        if (currentActivityGroup.isNotEmpty) {
+          grouped.add(ActivityGroupWidget(
+            groupType: currentGroupType ?? 'other',
+            activities: List.from(currentActivityGroup),
+          ));
+          currentActivityGroup.clear();
+          currentGroupType = null;
+        }
+        grouped.add(item);
+      } else if (item is J6Activity) {
+        final kind = ToolActivityHelper.classifyKind(item);
+        if (currentActivityGroup.isEmpty) {
+          currentActivityGroup.add(item);
+          currentGroupType = kind;
+        } else if (currentGroupType == kind) {
+          currentActivityGroup.add(item);
+        } else {
+          grouped.add(ActivityGroupWidget(
+            groupType: currentGroupType ?? 'other',
+            activities: List.from(currentActivityGroup),
+          ));
+          currentActivityGroup = [item];
+          currentGroupType = kind;
+        }
+      }
+    }
+
+    if (currentActivityGroup.isNotEmpty) {
+      grouped.add(ActivityGroupWidget(
+        groupType: currentGroupType ?? 'other',
+        activities: List.from(currentActivityGroup),
+      ));
+    }
+
+    return grouped;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final List<dynamic> timelineItems = [..._messages, ..._activities];
-    timelineItems.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    final timelineItems = _buildGroupedTimeline(_messages, _activities);
 
     final currentThread = _threads.firstWhere(
       (t) => t.threadId == _selectedThreadId,
@@ -442,7 +512,7 @@ class _MainScreenState extends State<MainScreen> {
                               ),
                               const SizedBox(height: 6),
                               const Text(
-                                'Select your AI engine (Grok Build, OpenCode, Anti Gravity ACP) and ask anything.',
+                                'Select your AI engine and ask anything.',
                                 style: TextStyle(
                                   fontSize: 12.5,
                                   color: AppTheme.textMuted,
@@ -459,6 +529,8 @@ class _MainScreenState extends State<MainScreen> {
                             final item = timelineItems[index];
                             if (item is J6Message) {
                               return MessageItemWidget(message: item);
+                            } else if (item is Widget) {
+                              return item;
                             } else if (item is J6Activity) {
                               return ActivityItemWidget(activity: item);
                             }
@@ -467,20 +539,20 @@ class _MainScreenState extends State<MainScreen> {
                         ),
                 ),
 
-                // Bottom Composer
+                // Composer at bottom
                 ComposerWidget(
                   providers: _providers,
                   selectedProvider: _selectedProvider,
                   selectedModel: _selectedModel,
-                  activeWorkspaceName: currentProject.title,
-                  onSelectModel: (provider, model) {
+                  onSelectModel: (p, m) {
                     setState(() {
-                      _selectedProvider = provider;
-                      _selectedModel = model;
+                      _selectedProvider = p;
+                      _selectedModel = m;
                     });
                   },
                   onSendPrompt: _handleSendPrompt,
                   isSending: _isSending,
+                  activeWorkspaceName: currentProject.title,
                 ),
               ],
             ),
