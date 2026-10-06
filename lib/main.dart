@@ -1,25 +1,26 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_picker/file_picker.dart';
 import 'theme/app_theme.dart';
-import 'models/t3_entities.dart';
-import 'services/t3_server_service.dart';
+import 'models/j6_entities.dart';
+import 'services/j6_server_service.dart';
 import 'widgets/sidebar_widget.dart';
 import 'widgets/message_item_widget.dart';
 import 'widgets/activity_item_widget.dart';
 import 'widgets/composer_widget.dart';
 
 void main() {
-  runApp(const ProviderScope(child: T3CodeApp()));
+  runApp(const ProviderScope(child: J6CodeApp()));
 }
 
-class T3CodeApp extends StatelessWidget {
-  const T3CodeApp({super.key});
+class J6CodeApp extends StatelessWidget {
+  const J6CodeApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'T3 Code',
+      title: 'j6code',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
       home: const MainScreen(),
@@ -35,13 +36,16 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
-  final T3ServerService _serverService = T3ServerService();
+  final J6ServerService _serverService = J6ServerService();
   
-  List<T3Project> _projects = [];
-  List<T3Thread> _threads = [];
-  List<T3Message> _messages = [];
-  List<T3Activity> _activities = [];
+  List<J6Project> _projects = [];
+  List<J6Thread> _threads = [];
+  List<J6Message> _messages = [];
+  List<J6Activity> _activities = [];
+  List<J6Provider> _providers = [];
   
+  J6Provider? _selectedProvider;
+  J6Model? _selectedModel;
   String? _selectedProjectId;
   String? _selectedThreadId;
   bool _isServerConnected = false;
@@ -58,14 +62,39 @@ class _MainScreenState extends State<MainScreen> {
   Future<void> _initApp() async {
     await _serverService.connect();
     _serverService.onConnectionStateChanged.listen((connected) {
-      if (mounted) {
-        setState(() => _isServerConnected = connected);
-      }
+      if (mounted) setState(() => _isServerConnected = connected);
     });
+
+    // Load available engines & models (Grok, OpenCode, Antigravity, etc.)
+    final providers = await _serverService.loadAvailableProviders();
+    J6Provider? defaultProvider;
+    J6Model? defaultModel;
+
+    // Prefer Grok Build or Antigravity default
+    if (providers.isNotEmpty) {
+      defaultProvider = providers.firstWhere(
+        (p) => p.id == 'grok' || p.id == 'antigravity',
+        orElse: () => providers.first,
+      );
+      if (defaultProvider.models.isNotEmpty) {
+        defaultModel = defaultProvider.models.firstWhere(
+          (m) => m.name.contains('Build') || m.name.contains('High'),
+          orElse: () => defaultProvider!.models.first,
+        );
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _providers = providers;
+        _selectedProvider = defaultProvider;
+        _selectedModel = defaultModel;
+      });
+    }
 
     await _loadInitialData();
 
-    // Auto-refresh state every 3 seconds to keep live with ongoing tasks
+    // Polling timer to keep live transcript updated with real-time activities
     _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (mounted) _pollUpdates();
     });
@@ -80,8 +109,8 @@ class _MainScreenState extends State<MainScreen> {
       currentThreadId = threads.first.threadId;
     }
 
-    List<T3Message> messages = [];
-    List<T3Activity> activities = [];
+    List<J6Message> messages = [];
+    List<J6Activity> activities = [];
     if (currentThreadId != null) {
       messages = await _serverService.fetchThreadMessages(currentThreadId);
       activities = await _serverService.fetchThreadActivities(currentThreadId);
@@ -148,23 +177,62 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   void _handleNewThread() async {
-    // Switch to clean view
-    setState(() {
-      _selectedThreadId = null;
-      _messages = [];
-      _activities = [];
-    });
+    if (_selectedProjectId == null) return;
+    final newId = await _serverService.createThread(
+      projectId: _selectedProjectId!,
+      title: 'New Coding Task',
+    );
+    if (newId != null) {
+      await _loadInitialData();
+      _selectThread(newId);
+    }
+  }
+
+  Future<void> _handleOpenFolder() async {
+    final selectedDirectory = await FilePicker.getDirectoryPath(
+      dialogTitle: 'Select Git Repository / Workspace Folder',
+    );
+
+    if (selectedDirectory != null && selectedDirectory.isNotEmpty) {
+      final project = await _serverService.openFolderAsProject(selectedDirectory);
+      if (project != null) {
+        final projects = await _serverService.fetchProjects();
+        setState(() {
+          _projects = projects;
+          _selectedProjectId = project.projectId;
+        });
+        final threads = await _serverService.fetchThreads(project.projectId);
+        if (threads.isNotEmpty) {
+          _selectThread(threads.first.threadId);
+        } else {
+          _handleNewThread();
+        }
+      }
+    }
   }
 
   void _handleSendPrompt(String prompt) async {
     if (_selectedProjectId == null) return;
     setState(() => _isSending = true);
 
-    String threadId = _selectedThreadId ?? 'thread_${DateTime.now().millisecondsSinceEpoch}';
+    String threadId = _selectedThreadId ?? '';
+    if (threadId.isEmpty) {
+      final created = await _serverService.createThread(
+        projectId: _selectedProjectId!,
+        title: prompt.length > 35 ? '${prompt.substring(0, 35)}...' : prompt,
+      );
+      threadId = created ?? 'thread_${DateTime.now().millisecondsSinceEpoch}';
+    }
+
+    final providerId = _selectedProvider?.id ?? 'grok';
+    final modelSlug = _selectedModel?.slug ?? 'grok-build';
+
     await _serverService.sendPrompt(
       threadId: threadId,
       projectId: _selectedProjectId!,
       prompt: prompt,
+      providerId: providerId,
+      modelSlug: modelSlug,
     );
 
     setState(() {
@@ -186,16 +254,26 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Merge messages and activities chronologically for the transcript
     final List<dynamic> timelineItems = [..._messages, ..._activities];
     timelineItems.sort((a, b) => a.createdAt.compareTo(b.createdAt));
 
     final currentThread = _threads.firstWhere(
       (t) => t.threadId == _selectedThreadId,
-      orElse: () => T3Thread(
+      orElse: () => J6Thread(
         threadId: '',
         projectId: '',
-        title: 'New Conversation',
+        title: 'New Workspace Session',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      ),
+    );
+
+    final currentProject = _projects.firstWhere(
+      (p) => p.projectId == _selectedProjectId,
+      orElse: () => J6Project(
+        projectId: '',
+        title: 'j6code',
+        workspaceRoot: '',
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
       ),
@@ -204,19 +282,23 @@ class _MainScreenState extends State<MainScreen> {
     return Scaffold(
       body: Row(
         children: [
-          // Left Sidebar
+          // Sidebar with Repository and Thread management
           SidebarWidget(
             projects: _projects,
             threads: _threads,
             selectedProjectId: _selectedProjectId,
             selectedThreadId: _selectedThreadId,
             isServerConnected: _isServerConnected,
-            onSelectProject: (id) => setState(() => _selectedProjectId = id),
+            onSelectProject: (id) {
+              setState(() => _selectedProjectId = id);
+              _loadInitialData();
+            },
             onSelectThread: _selectThread,
             onNewThread: _handleNewThread,
+            onOpenFolder: _handleOpenFolder,
           ),
 
-          // Main Conversation Area
+          // Main Conversation & Coding Workspace Area
           Expanded(
             child: Column(
               children: [
@@ -231,10 +313,21 @@ class _MainScreenState extends State<MainScreen> {
                   child: Row(
                     children: [
                       Icon(
-                        Icons.tag_rounded,
+                        currentProject.isGitRepo ? Icons.commit_rounded : Icons.folder_open_rounded,
                         size: 16,
-                        color: AppTheme.textMuted,
+                        color: AppTheme.accent,
                       ),
+                      const SizedBox(width: 8),
+                      Text(
+                        currentProject.title,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Text('/', style: TextStyle(color: AppTheme.textMuted)),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -242,23 +335,43 @@ class _MainScreenState extends State<MainScreen> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w600,
-                            color: AppTheme.textPrimary,
+                            fontSize: 13,
+                            color: AppTheme.textSecondary,
                           ),
                         ),
                       ),
+                      if (currentProject.workspaceRoot.isNotEmpty) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: AppTheme.surfaceHover,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: AppTheme.borderSubtle),
+                          ),
+                          child: Text(
+                            currentProject.workspaceRoot,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontFamily: 'Consolas, monospace',
+                              fontSize: 10.5,
+                              color: AppTheme.textMuted,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
                       IconButton(
                         icon: const Icon(Icons.refresh_rounded, size: 16),
                         color: AppTheme.textMuted,
                         onPressed: _pollUpdates,
-                        tooltip: 'Refresh transcript',
+                        tooltip: 'Sync updates',
                       ),
                     ],
                   ),
                 ),
 
-                // Conversation Transcript / Stream
+                // Conversation & Action Feed
                 Expanded(
                   child: timelineItems.isEmpty
                       ? Center(
@@ -266,31 +379,31 @@ class _MainScreenState extends State<MainScreen> {
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Container(
-                                width: 48,
-                                height: 48,
+                                width: 56,
+                                height: 56,
                                 decoration: BoxDecoration(
                                   color: AppTheme.surfaceSubtle,
-                                  borderRadius: BorderRadius.circular(12),
+                                  borderRadius: BorderRadius.circular(16),
                                   border: Border.all(color: AppTheme.border),
                                 ),
                                 child: const Icon(
-                                  Icons.chat_bubble_outline_rounded,
-                                  size: 24,
-                                  color: AppTheme.textMuted,
+                                  Icons.code_rounded,
+                                  size: 28,
+                                  color: AppTheme.accent,
                                 ),
                               ),
                               const SizedBox(height: 16),
-                              const Text(
-                                'What would you like to build?',
-                                style: TextStyle(
-                                  fontSize: 15,
+                              Text(
+                                'Ready to code in ${currentProject.title}',
+                                style: const TextStyle(
+                                  fontSize: 16,
                                   fontWeight: FontWeight.w600,
                                   color: AppTheme.textPrimary,
                                 ),
                               ),
                               const SizedBox(height: 6),
                               const Text(
-                                'Type a prompt below to interact with your codebase.',
+                                'Select your AI engine (Grok Build, OpenCode, Anti Gravity ACP) and ask anything.',
                                 style: TextStyle(
                                   fontSize: 12.5,
                                   color: AppTheme.textMuted,
@@ -305,9 +418,9 @@ class _MainScreenState extends State<MainScreen> {
                           itemCount: timelineItems.length,
                           itemBuilder: (context, index) {
                             final item = timelineItems[index];
-                            if (item is T3Message) {
+                            if (item is J6Message) {
                               return MessageItemWidget(message: item);
-                            } else if (item is T3Activity) {
+                            } else if (item is J6Activity) {
                               return ActivityItemWidget(activity: item);
                             }
                             return const SizedBox.shrink();
@@ -317,6 +430,16 @@ class _MainScreenState extends State<MainScreen> {
 
                 // Bottom Composer
                 ComposerWidget(
+                  providers: _providers,
+                  selectedProvider: _selectedProvider,
+                  selectedModel: _selectedModel,
+                  activeWorkspaceName: currentProject.title,
+                  onSelectModel: (provider, model) {
+                    setState(() {
+                      _selectedProvider = provider;
+                      _selectedModel = model;
+                    });
+                  },
                   onSendPrompt: _handleSendPrompt,
                   isSending: _isSending,
                 ),

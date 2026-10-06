@@ -1,39 +1,42 @@
 import 'dart:convert';
 
-class T3Project {
+class J6Project {
   final String projectId;
   final String title;
   final String workspaceRoot;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final bool isGitRepo;
 
-  T3Project({
+  J6Project({
     required this.projectId,
     required this.title,
     required this.workspaceRoot,
     required this.createdAt,
     required this.updatedAt,
+    this.isGitRepo = false,
   });
 
-  factory T3Project.fromJson(Map<String, dynamic> json) {
-    return T3Project(
+  factory J6Project.fromJson(Map<String, dynamic> json) {
+    return J6Project(
       projectId: json['project_id'] ?? '',
       title: json['title'] ?? 'Untitled Project',
       workspaceRoot: json['workspace_root'] ?? '',
       createdAt: DateTime.tryParse(json['created_at'] ?? '') ?? DateTime.now(),
       updatedAt: DateTime.tryParse(json['updated_at'] ?? '') ?? DateTime.now(),
+      isGitRepo: json['is_git_repo'] == true || json['is_git_repo'] == 1,
     );
   }
 }
 
-class T3Thread {
+class J6Thread {
   final String threadId;
   final String projectId;
   final String title;
   final DateTime createdAt;
   final DateTime updatedAt;
 
-  T3Thread({
+  J6Thread({
     required this.threadId,
     required this.projectId,
     required this.title,
@@ -41,8 +44,8 @@ class T3Thread {
     required this.updatedAt,
   });
 
-  factory T3Thread.fromJson(Map<String, dynamic> json) {
-    return T3Thread(
+  factory J6Thread.fromJson(Map<String, dynamic> json) {
+    return J6Thread(
       threadId: json['thread_id'] ?? '',
       projectId: json['project_id'] ?? '',
       title: json['title'] ?? 'Untitled Conversation',
@@ -52,7 +55,7 @@ class T3Thread {
   }
 }
 
-class T3Message {
+class J6Message {
   final String messageId;
   final String threadId;
   final String role; // 'user', 'assistant', 'reasoning'
@@ -60,7 +63,7 @@ class T3Message {
   final bool isStreaming;
   final DateTime createdAt;
 
-  T3Message({
+  J6Message({
     required this.messageId,
     required this.threadId,
     required this.role,
@@ -69,8 +72,8 @@ class T3Message {
     required this.createdAt,
   });
 
-  factory T3Message.fromJson(Map<String, dynamic> json) {
-    return T3Message(
+  factory J6Message.fromJson(Map<String, dynamic> json) {
+    return J6Message(
       messageId: json['message_id'] ?? '',
       threadId: json['thread_id'] ?? '',
       role: json['role'] ?? 'user',
@@ -81,7 +84,7 @@ class T3Message {
   }
 }
 
-class T3Activity {
+class J6Activity {
   final String activityId;
   final String threadId;
   final String kind;
@@ -89,7 +92,7 @@ class T3Activity {
   final Map<String, dynamic> payload;
   final DateTime createdAt;
 
-  T3Activity({
+  J6Activity({
     required this.activityId,
     required this.threadId,
     required this.kind,
@@ -98,14 +101,14 @@ class T3Activity {
     required this.createdAt,
   });
 
-  factory T3Activity.fromJson(Map<String, dynamic> json) {
+  factory J6Activity.fromJson(Map<String, dynamic> json) {
     Map<String, dynamic> p = {};
     if (json['payload_json'] != null) {
       try {
         p = jsonDecode(json['payload_json']);
       } catch (_) {}
     }
-    return T3Activity(
+    return J6Activity(
       activityId: json['activity_id'] ?? '',
       threadId: json['thread_id'] ?? '',
       kind: json['kind'] ?? '',
@@ -114,4 +117,26 @@ class T3Activity {
       createdAt: DateTime.tryParse(json['created_at'] ?? '') ?? DateTime.now(),
     );
   }
+}
+
+class J6Model {
+  final String slug;
+  final String name;
+
+  const J6Model({
+    required this.slug,
+    required this.name,
+  });
+}
+
+class J6Provider {
+  final String id;
+  final String displayName;
+  final List<J6Model> models;
+
+  const J6Provider({
+    required this.id,
+    required this.displayName,
+    required this.models,
+  });
 }

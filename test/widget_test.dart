@@ -1,9 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:t3code/main.dart';
+import 'package:j6code/main.dart';
 
 void main() {
-  testWidgets('T3CodeApp smoke test', (WidgetTester tester) async {
-    await tester.pumpWidget(const T3CodeApp());
-    expect(find.byType(T3CodeApp), findsOneWidget);
+  testWidgets('J6CodeApp smoke test', (WidgetTester tester) async {
+    await tester.pumpWidget(const J6CodeApp());
+    expect(find.byType(J6CodeApp), findsOneWidget);
   });
 }

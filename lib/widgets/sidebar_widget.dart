@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
-import '../models/t3_entities.dart';
-import '../services/t3_server_service.dart';
+import '../models/j6_entities.dart';
 
 class SidebarWidget extends StatelessWidget {
-  final List<T3Project> projects;
-  final List<T3Thread> threads;
+  final List<J6Project> projects;
+  final List<J6Thread> threads;
   final String? selectedProjectId;
   final String? selectedThreadId;
   final Function(String projectId) onSelectProject;
   final Function(String threadId) onSelectThread;
   final VoidCallback onNewThread;
+  final VoidCallback onOpenFolder;
   final bool isServerConnected;
 
   const SidebarWidget({
@@ -22,13 +22,14 @@ class SidebarWidget extends StatelessWidget {
     required this.onSelectProject,
     required this.onSelectThread,
     required this.onNewThread,
+    required this.onOpenFolder,
     required this.isServerConnected,
   });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 280,
+      width: 290,
       decoration: const BoxDecoration(
         color: AppTheme.surface,
         border: Border(right: BorderSide(color: AppTheme.border, width: 1)),
@@ -45,19 +46,30 @@ class SidebarWidget extends StatelessWidget {
             child: Row(
               children: [
                 Container(
-                  width: 28,
-                  height: 28,
+                  width: 30,
+                  height: 30,
                   decoration: BoxDecoration(
-                    color: AppTheme.accent,
-                    borderRadius: BorderRadius.circular(6),
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppTheme.accent.withAlpha(50),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
                   ),
                   child: const Center(
                     child: Text(
-                      'T3',
+                      'J6',
                       style: TextStyle(
                         color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 14,
                         letterSpacing: -0.5,
                       ),
                     ),
@@ -68,17 +80,18 @@ class SidebarWidget extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'T3 Code',
+                      'j6code',
                       style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
                         color: AppTheme.textPrimary,
+                        letterSpacing: -0.3,
                       ),
                     ),
                     Text(
-                      'Flutter Desktop',
+                      'AI Workspace Client',
                       style: TextStyle(
-                        fontSize: 11,
+                        fontSize: 10.5,
                         color: AppTheme.textMuted,
                       ),
                     ),
@@ -87,9 +100,9 @@ class SidebarWidget extends StatelessWidget {
                 const Spacer(),
                 // Connection indicator
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
                   decoration: BoxDecoration(
-                    color: isServerConnected ? AppTheme.success.withAlpha(30) : AppTheme.error.withAlpha(30),
+                    color: isServerConnected ? AppTheme.success.withAlpha(25) : AppTheme.error.withAlpha(25),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
                       color: isServerConnected ? AppTheme.success : AppTheme.error,
@@ -109,10 +122,10 @@ class SidebarWidget extends StatelessWidget {
                       ),
                       const SizedBox(width: 4),
                       Text(
-                        isServerConnected ? 'LIVE' : 'OFFLINE',
+                        isServerConnected ? 'CONNECTED' : 'STANDALONE',
                         style: TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.bold,
+                          fontSize: 8.5,
+                          fontWeight: FontWeight.w700,
                           color: isServerConnected ? AppTheme.success : AppTheme.error,
                         ),
                       ),
@@ -123,78 +136,162 @@ class SidebarWidget extends StatelessWidget {
             ),
           ),
 
-          // New Thread Button
+          // Action Buttons: Open Folder / Repo + New Thread
           Padding(
-            padding: const EdgeInsets.all(12),
-            child: InkWell(
-              onTap: onNewThread,
-              borderRadius: BorderRadius.circular(8),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                decoration: BoxDecoration(
-                  color: AppTheme.accentSubtle,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppTheme.accent.withAlpha(70)),
-                ),
-                child: const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.add, size: 16, color: AppTheme.accent),
-                    SizedBox(width: 8),
-                    Text(
-                      'New Thread',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppTheme.accent,
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: onOpenFolder,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+                      decoration: BoxDecoration(
+                        color: AppTheme.surfaceSubtle,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.border),
+                      ),
+                      child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.folder_open_rounded, size: 15, color: AppTheme.textSecondary),
+                          SizedBox(width: 6),
+                          Text(
+                            'Open Repo',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.textSecondary,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  ],
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: InkWell(
+                    onTap: onNewThread,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+                      decoration: BoxDecoration(
+                        color: AppTheme.accentSubtle,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppTheme.accent.withAlpha(70)),
+                      ),
+                      child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.add_rounded, size: 15, color: AppTheme.accent),
+                          SizedBox(width: 6),
+                          Text(
+                            'New Thread',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.accent,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
 
-          // Workspace / Project Selector
-          if (projects.isNotEmpty) ...[
+          // Workspace / Projects Dropdown / List
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                const Text(
+                  'ACTIVE REPOSITORY',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.8,
+                    color: AppTheme.textMuted,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${projects.length} loaded',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: AppTheme.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          if (projects.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: Row(
-                children: [
-                  const Text(
-                    'PROJECT',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1,
-                      color: AppTheme.textMuted,
-                    ),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: AppTheme.surfaceHover,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.borderSubtle),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    isExpanded: true,
+                    value: selectedProjectId ?? (projects.isNotEmpty ? projects.first.projectId : null),
+                    dropdownColor: AppTheme.surfaceHover,
+                    icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: AppTheme.textMuted),
+                    items: projects.map((p) {
+                      return DropdownMenuItem<String>(
+                        value: p.projectId,
+                        child: Row(
+                          children: [
+                            Icon(
+                              p.isGitRepo ? Icons.alt_route_rounded : Icons.folder_rounded,
+                              size: 15,
+                              color: p.isGitRepo ? AppTheme.accent : AppTheme.textSecondary,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                p.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppTheme.textPrimary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (val) {
+                      if (val != null) onSelectProject(val);
+                    },
                   ),
-                  const Spacer(),
-                  Text(
-                    projects.first.title,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: AppTheme.textSecondary,
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
-            const Divider(height: 16),
-          ],
+
+          const Divider(height: 20),
 
           // Threads List Header
           const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Text(
-              'THREADS',
+              'CONVERSATIONS',
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.bold,
-                letterSpacing: 1,
+                letterSpacing: 0.8,
                 color: AppTheme.textMuted,
               ),
             ),
@@ -205,8 +302,9 @@ class SidebarWidget extends StatelessWidget {
             child: threads.isEmpty
                 ? const Center(
                     child: Text(
-                      'No threads yet',
-                      style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+                      'No conversations yet\nClick New Thread to begin',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12, color: AppTheme.textMuted, height: 1.5),
                     ),
                   )
                 : ListView.builder(
@@ -217,7 +315,7 @@ class SidebarWidget extends StatelessWidget {
                       final isSelected = thread.threadId == selectedThreadId;
 
                       return Container(
-                        margin: const EdgeInsets.only(bottom: 4),
+                        margin: const EdgeInsets.only(bottom: 3),
                         decoration: BoxDecoration(
                           color: isSelected ? AppTheme.surfaceHover : Colors.transparent,
                           borderRadius: BorderRadius.circular(6),
@@ -231,7 +329,7 @@ class SidebarWidget extends StatelessWidget {
                           contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
                           leading: Icon(
                             Icons.chat_bubble_outline_rounded,
-                            size: 16,
+                            size: 15,
                             color: isSelected ? AppTheme.accent : AppTheme.textMuted,
                           ),
                           title: Text(
@@ -264,17 +362,17 @@ class SidebarWidget extends StatelessWidget {
             decoration: const BoxDecoration(
               border: Border(top: BorderSide(color: AppTheme.borderSubtle)),
             ),
-            child: Row(
+            child: const Row(
               children: [
-                const Icon(Icons.dns_outlined, size: 14, color: AppTheme.textMuted),
-                const SizedBox(width: 8),
+                Icon(Icons.terminal_rounded, size: 14, color: AppTheme.textMuted),
+                SizedBox(width: 8),
                 Text(
-                  'Port ${T3ServerService.serverPort}',
-                  style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                  'j6code v1.0.0',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
                 ),
-                const Spacer(),
-                const Text(
-                  'v0.0.45',
+                Spacer(),
+                Text(
+                  'Desktop x64',
                   style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
                 ),
               ],

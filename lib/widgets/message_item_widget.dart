@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
 import '../theme/app_theme.dart';
-import '../models/t3_entities.dart';
+import '../models/j6_entities.dart';
 
 class MessageItemWidget extends StatelessWidget {
-  final T3Message message;
+  final J6Message message;
 
   const MessageItemWidget({
     super.key,
@@ -35,7 +34,7 @@ class MessageItemWidget extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Thought Process',
+                    'Agent Reasoning',
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
@@ -66,12 +65,12 @@ class MessageItemWidget extends StatelessWidget {
         children: [
           // Role Avatar
           Container(
-            width: 28,
-            height: 28,
+            width: 30,
+            height: 30,
             margin: const EdgeInsets.only(top: 2),
             decoration: BoxDecoration(
               color: isUser ? AppTheme.accent : AppTheme.surfaceHover,
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(8),
               border: Border.all(
                 color: isUser ? AppTheme.accent : AppTheme.border,
                 width: 1,
@@ -95,7 +94,7 @@ class MessageItemWidget extends StatelessWidget {
                 Row(
                   children: [
                     Text(
-                      isUser ? 'You' : 'Antigravity (Assistant)',
+                      isUser ? 'You' : 'Assistant',
                       style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
@@ -121,26 +120,12 @@ class MessageItemWidget extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 6),
-                MarkdownBody(
-                  data: message.text,
-                  selectable: true,
-                  styleSheet: MarkdownStyleSheet(
-                    p: const TextStyle(
-                      fontSize: 13.5,
-                      height: 1.5,
-                      color: AppTheme.textPrimary,
-                    ),
-                    code: const TextStyle(
-                      fontFamily: 'Consolas, monospace',
-                      fontSize: 12.5,
-                      backgroundColor: AppTheme.surfaceHover,
-                      color: AppTheme.accent,
-                    ),
-                    codeblockDecoration: BoxDecoration(
-                      color: AppTheme.surfaceSubtle,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: AppTheme.border),
-                    ),
+                SelectableText(
+                  message.text,
+                  style: const TextStyle(
+                    fontSize: 13.5,
+                    height: 1.5,
+                    color: AppTheme.textPrimary,
                   ),
                 ),
               ],
