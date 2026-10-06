@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'package:sqlite3/sqlite3.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/j6_entities.dart';
 
@@ -24,6 +25,22 @@ class J6ServerService {
 
   final _messagesController = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get onMessageReceived => _messagesController.stream;
+
+  Database? _db;
+
+  Database _getDb({bool readOnly = true}) {
+    if (_db != null) {
+      try {
+        _db!.select('SELECT 1');
+        return _db!;
+      } catch (_) {
+        _db = null;
+      }
+    }
+    final mode = readOnly ? OpenMode.readOnly : OpenMode.readWrite;
+    _db = sqlite3.open(sqlitePath, mode: mode);
+    return _db!;
+  }
 
   // Mint WebSocket token using secret key
   String? mintWebSocketTicket() {
@@ -130,7 +147,6 @@ class J6ServerService {
       if (kDebugMode) print("Error loading providers: $e");
     }
 
-    // Default fallbacks if caches are empty
     if (providers.isEmpty) {
       providers.addAll([
         const J6Provider(
@@ -171,127 +187,167 @@ class J6ServerService {
       final dir = Directory(folderPath);
       if (!dir.existsSync()) return null;
 
-      final normalizedPath = dir.path.replaceAll('\\', '/');
+      final normalizedPath = dir.path.replaceAll('/', '\\');
       final folderName = dir.uri.pathSegments.where((s) => s.isNotEmpty).last;
       final gitDir = Directory('${dir.path}\\.git');
       final isGit = gitDir.existsSync();
 
-      // Check if project exists or insert into state.sqlite
-      final script = '''
-const { DatabaseSync } = require("node:sqlite");
-const db = new DatabaseSync("$sqlitePath".replace(/\\\\/g, "/"));
-const normalized = "$normalizedPath".replace(/\\//g, "\\\\\\\\");
-let p = db.prepare("SELECT * FROM projection_projects WHERE workspace_root = ? OR workspace_root = ?").get(normalized, "$normalizedPath");
-if (!p) {
-  const id = "proj_" + Math.random().toString(36).slice(2);
-  const now = new Date().toISOString();
-  db.prepare("INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at) VALUES (?, ?, ?, '[]', ?, ?)").run(id, ${jsonEncode(folderName)}, normalized, now, now);
-  p = db.prepare("SELECT * FROM projection_projects WHERE project_id = ?").get(id);
-}
-console.log(JSON.stringify(p));
-''';
-      final res = await Process.run('node', ['-e', script]);
-      if (res.exitCode == 0) {
-        final parsed = jsonDecode(res.stdout.toString().trim());
-        if (parsed != null) {
-          final proj = J6Project.fromJson(Map<String, dynamic>.from(parsed));
-          return J6Project(
-            projectId: proj.projectId,
-            title: proj.title,
-            workspaceRoot: proj.workspaceRoot,
-            createdAt: proj.createdAt,
-            updatedAt: proj.updatedAt,
-            isGitRepo: isGit,
-          );
-        }
+      final db = _getDb(readOnly: false);
+      final existing = db.select(
+        'SELECT * FROM projection_projects WHERE workspace_root = ? OR workspace_root = ?',
+        [normalizedPath, dir.path.replaceAll('\\', '/')],
+      );
+
+      if (existing.isNotEmpty) {
+        final row = existing.first;
+        return J6Project(
+          projectId: row['project_id'].toString(),
+          title: row['title'].toString(),
+          workspaceRoot: row['workspace_root'].toString(),
+          createdAt: DateTime.tryParse(row['created_at'].toString()) ?? DateTime.now(),
+          updatedAt: DateTime.tryParse(row['updated_at'].toString()) ?? DateTime.now(),
+          isGitRepo: isGit,
+        );
       }
+
+      final id = "proj_${DateTime.now().millisecondsSinceEpoch}_${DateTime.now().microsecond % 1000}";
+      final now = DateTime.now().toUtc().toIso8601String();
+      db.execute(
+        'INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, folderName, normalizedPath, '[]', now, now],
+      );
+
+      return J6Project(
+        projectId: id,
+        title: folderName,
+        workspaceRoot: normalizedPath,
+        createdAt: DateTime.parse(now),
+        updatedAt: DateTime.parse(now),
+        isGitRepo: isGit,
+      );
     } catch (e) {
       if (kDebugMode) print("Error opening folder: $e");
     }
     return null;
   }
 
-  /// Fast reader for SQLite via node helper
+  /// Direct high-performance SQLite reader
   Future<List<J6Project>> fetchProjects() async {
     try {
-      final script = '''
-const { DatabaseSync } = require("node:sqlite");
-const fs = require("node:fs");
-const db = new DatabaseSync("$sqlitePath".replace(/\\\\/g, "/"), { readOnly: true });
-const projects = db.prepare("SELECT * FROM projection_projects ORDER BY updated_at DESC").all();
-for (const p of projects) {
-  try {
-    p.is_git_repo = fs.existsSync(p.workspace_root + "/.git") || fs.existsSync(p.workspace_root + "\\\\.git");
-  } catch (_) {
-    p.is_git_repo = false;
-  }
-}
-console.log(JSON.stringify(projects));
-''';
-      final res = await Process.run('node', ['-e', script]);
-      if (res.exitCode == 0) {
-        final list = jsonDecode(res.stdout.toString().trim()) as List<dynamic>;
-        return list.map((item) => J6Project.fromJson(Map<String, dynamic>.from(item))).toList();
+      final db = _getDb(readOnly: true);
+      final results = db.select('SELECT * FROM projection_projects ORDER BY updated_at DESC');
+      final List<J6Project> list = [];
+      for (final row in results) {
+        final root = row['workspace_root']?.toString() ?? '';
+        bool isGit = false;
+        try {
+          if (root.isNotEmpty) {
+            isGit = Directory('$root\\.git').existsSync() || Directory('$root/.git').existsSync();
+          }
+        } catch (_) {}
+
+        list.add(J6Project(
+          projectId: row['project_id'].toString(),
+          title: row['title']?.toString() ?? 'Project',
+          workspaceRoot: root,
+          createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
+          updatedAt: DateTime.tryParse(row['updated_at']?.toString() ?? '') ?? DateTime.now(),
+          isGitRepo: isGit,
+        ));
       }
+      return list;
     } catch (e) {
-      if (kDebugMode) print("Error fetching projects: $e");
+      if (kDebugMode) print("Error fetching projects via sqlite3: $e");
     }
     return [];
   }
 
   Future<List<J6Thread>> fetchThreads(String? projectId) async {
     try {
-      final condition = (projectId != null && projectId.isNotEmpty)
-          ? "WHERE project_id = '$projectId'"
-          : "";
-      final script = '''
-const { DatabaseSync } = require("node:sqlite");
-const db = new DatabaseSync("$sqlitePath".replace(/\\\\/g, "/"), { readOnly: true });
-console.log(JSON.stringify(db.prepare("SELECT * FROM projection_threads $condition ORDER BY updated_at DESC").all()));
-''';
-      final res = await Process.run('node', ['-e', script]);
-      if (res.exitCode == 0) {
-        final list = jsonDecode(res.stdout.toString().trim()) as List<dynamic>;
-        return list.map((item) => J6Thread.fromJson(Map<String, dynamic>.from(item))).toList();
+      final db = _getDb(readOnly: true);
+      final ResultSet results;
+      if (projectId != null && projectId.isNotEmpty) {
+        results = db.select(
+          'SELECT * FROM projection_threads WHERE project_id = ? ORDER BY updated_at DESC',
+          [projectId],
+        );
+      } else {
+        results = db.select('SELECT * FROM projection_threads ORDER BY updated_at DESC');
       }
+
+      final List<J6Thread> list = [];
+      for (final row in results) {
+        list.add(J6Thread(
+          threadId: row['thread_id'].toString(),
+          projectId: row['project_id']?.toString() ?? '',
+          title: row['title']?.toString() ?? 'Conversation',
+          createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
+          updatedAt: DateTime.tryParse(row['updated_at']?.toString() ?? '') ?? DateTime.now(),
+        ));
+      }
+      return list;
     } catch (e) {
-      if (kDebugMode) print("Error fetching threads: $e");
+      if (kDebugMode) print("Error fetching threads via sqlite3: $e");
     }
     return [];
   }
 
   Future<List<J6Message>> fetchThreadMessages(String threadId) async {
     try {
-      final script = '''
-const { DatabaseSync } = require("node:sqlite");
-const db = new DatabaseSync("$sqlitePath".replace(/\\\\/g, "/"), { readOnly: true });
-console.log(JSON.stringify(db.prepare("SELECT * FROM projection_thread_messages WHERE thread_id = '$threadId' ORDER BY created_at ASC").all()));
-''';
-      final res = await Process.run('node', ['-e', script]);
-      if (res.exitCode == 0) {
-        final list = jsonDecode(res.stdout.toString().trim()) as List<dynamic>;
-        return list.map((item) => J6Message.fromJson(Map<String, dynamic>.from(item))).toList();
+      final db = _getDb(readOnly: true);
+      final results = db.select(
+        'SELECT * FROM projection_thread_messages WHERE thread_id = ? ORDER BY created_at ASC',
+        [threadId],
+      );
+
+      final List<J6Message> list = [];
+      for (final row in results) {
+        list.add(J6Message(
+          messageId: row['message_id'].toString(),
+          threadId: row['thread_id'].toString(),
+          role: row['role']?.toString() ?? 'user',
+          text: row['text']?.toString() ?? '',
+          isStreaming: row['is_streaming'] == 1,
+          createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
+        ));
       }
+      return list;
     } catch (e) {
-      if (kDebugMode) print("Error fetching messages: $e");
+      if (kDebugMode) print("Error fetching messages via sqlite3: $e");
     }
     return [];
   }
 
   Future<List<J6Activity>> fetchThreadActivities(String threadId) async {
     try {
-      final script = '''
-const { DatabaseSync } = require("node:sqlite");
-const db = new DatabaseSync("$sqlitePath".replace(/\\\\/g, "/"), { readOnly: true });
-console.log(JSON.stringify(db.prepare("SELECT * FROM projection_thread_activities WHERE thread_id = '$threadId' ORDER BY sequence ASC").all()));
-''';
-      final res = await Process.run('node', ['-e', script]);
-      if (res.exitCode == 0) {
-        final list = jsonDecode(res.stdout.toString().trim()) as List<dynamic>;
-        return list.map((item) => J6Activity.fromJson(Map<String, dynamic>.from(item))).toList();
+      final db = _getDb(readOnly: true);
+      final results = db.select(
+        'SELECT * FROM projection_thread_activities WHERE thread_id = ? ORDER BY rowid ASC',
+        [threadId],
+      );
+
+      final List<J6Activity> list = [];
+      for (final row in results) {
+        Map<String, dynamic> payload = {};
+        final rawPayload = row['payload_json']?.toString();
+        if (rawPayload != null && rawPayload.isNotEmpty) {
+          try {
+            payload = jsonDecode(rawPayload);
+          } catch (_) {}
+        }
+
+        list.add(J6Activity(
+          activityId: row['activity_id']?.toString() ?? '',
+          threadId: row['thread_id']?.toString() ?? '',
+          kind: row['kind']?.toString() ?? '',
+          summary: row['summary']?.toString() ?? '',
+          payload: payload,
+          createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
+        ));
       }
+      return list;
     } catch (e) {
-      if (kDebugMode) print("Error fetching activities: $e");
+      if (kDebugMode) print("Error fetching activities via sqlite3: $e");
     }
     return [];
   }
@@ -302,19 +358,15 @@ console.log(JSON.stringify(db.prepare("SELECT * FROM projection_thread_activitie
   }) async {
     try {
       final id = "th_${DateTime.now().millisecondsSinceEpoch}_${(1000 + DateTime.now().microsecond % 9000)}";
-      final script = '''
-const { DatabaseSync } = require("node:sqlite");
-const db = new DatabaseSync("$sqlitePath".replace(/\\\\/g, "/"));
-const now = new Date().toISOString();
-db.prepare("INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run("$id", "$projectId", ${jsonEncode(title)}, now, now);
-console.log("$id");
-''';
-      final res = await Process.run('node', ['-e', script]);
-      if (res.exitCode == 0) {
-        return res.stdout.toString().trim();
-      }
+      final now = DateTime.now().toUtc().toIso8601String();
+      final db = _getDb(readOnly: false);
+      db.execute(
+        'INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+        [id, projectId, title, now, now],
+      );
+      return id;
     } catch (e) {
-      if (kDebugMode) print("Error creating thread: $e");
+      if (kDebugMode) print("Error creating thread via sqlite3: $e");
     }
     return null;
   }
@@ -327,30 +379,39 @@ console.log("$id");
     required String modelSlug,
   }) async {
     try {
-      final script = '''
-const { DatabaseSync } = require("node:sqlite");
-const db = new DatabaseSync("$sqlitePath".replace(/\\\\/g, "/"));
-const now = new Date().toISOString();
-const id = "msg_" + Math.random().toString(36).slice(2);
-db.prepare("INSERT INTO projection_thread_messages (message_id, thread_id, role, text, is_streaming, created_at, updated_at) VALUES (?, ?, 'user', ?, 0, ?, ?)").run(id, "$threadId", ${jsonEncode(prompt)}, now, now);
-db.prepare("UPDATE projection_threads SET updated_at = ? WHERE thread_id = ?").run(now, "$threadId");
+      final now = DateTime.now().toUtc().toIso8601String();
+      final msgId = "msg_${DateTime.now().millisecondsSinceEpoch}_${DateTime.now().microsecond % 1000}";
+      final db = _getDb(readOnly: false);
 
-// Insert activity record reflecting provider and model invocation
-const actId = "act_" + Math.random().toString(36).slice(2);
-const payload = {
-  itemType: "prompt_dispatch",
-  status: "inProgress",
-  provider: "$providerId",
-  model: "$modelSlug",
-  title: "Dispatched prompt to $providerId ($modelSlug)"
-};
-db.prepare("INSERT INTO projection_thread_activities (activity_id, thread_id, kind, summary, payload_json, created_at) VALUES (?, ?, 'tool.updated', ?, ?, ?)").run(actId, "$threadId", "Dispatched to $providerId", JSON.stringify(payload), now);
+      // 1. Insert user message
+      db.execute(
+        'INSERT INTO projection_thread_messages (message_id, thread_id, role, text, is_streaming, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [msgId, threadId, 'user', prompt, 0, now, now],
+      );
 
-console.log("SUCCESS");
-''';
-      final res = await Process.run('node', ['-e', script]);
-      return res.exitCode == 0;
+      // 2. Update thread touch time
+      db.execute(
+        'UPDATE projection_threads SET updated_at = ? WHERE thread_id = ?',
+        [now, threadId],
+      );
+
+      // 3. Insert agent activity indicating prompt dispatch
+      final actId = "act_${DateTime.now().millisecondsSinceEpoch}_${DateTime.now().microsecond % 1000}";
+      final payload = {
+        'itemType': 'prompt_dispatch',
+        'status': 'inProgress',
+        'provider': providerId,
+        'model': modelSlug,
+        'title': 'Sent prompt to $providerId ($modelSlug)',
+      };
+      db.execute(
+        'INSERT INTO projection_thread_activities (activity_id, thread_id, kind, summary, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [actId, threadId, 'tool.updated', 'Dispatched to $providerId', jsonEncode(payload), now],
+      );
+
+      return true;
     } catch (e) {
+      if (kDebugMode) print("Error sending prompt via sqlite3: $e");
       return false;
     }
   }
@@ -359,5 +420,8 @@ console.log("SUCCESS");
     _channel?.sink.close();
     _connectionStateController.close();
     _messagesController.close();
+    try {
+      _db?.close();
+    } catch (_) {}
   }
 }

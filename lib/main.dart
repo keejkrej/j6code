@@ -70,7 +70,6 @@ class _MainScreenState extends State<MainScreen> {
     J6Provider? defaultProvider;
     J6Model? defaultModel;
 
-    // Prefer Grok Build or Antigravity default
     if (providers.isNotEmpty) {
       defaultProvider = providers.firstWhere(
         (p) => p.id == 'grok' || p.id == 'antigravity',
@@ -95,17 +94,18 @@ class _MainScreenState extends State<MainScreen> {
     await _loadInitialData();
 
     // Polling timer to keep live transcript updated with real-time activities
-    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+    _refreshTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (mounted) _pollUpdates();
     });
   }
 
   Future<void> _loadInitialData() async {
     final projects = await _serverService.fetchProjects();
-    final threads = await _serverService.fetchThreads(projects.isNotEmpty ? projects.first.projectId : null);
+    final String? currentProjectId = _selectedProjectId ?? (projects.isNotEmpty ? projects.first.projectId : null);
+    final threads = await _serverService.fetchThreads(currentProjectId);
     
     String? currentThreadId = _selectedThreadId;
-    if (currentThreadId == null && threads.isNotEmpty) {
+    if ((currentThreadId == null || !threads.any((t) => t.threadId == currentThreadId)) && threads.isNotEmpty) {
       currentThreadId = threads.first.threadId;
     }
 
@@ -120,9 +120,7 @@ class _MainScreenState extends State<MainScreen> {
       setState(() {
         _projects = projects;
         _threads = threads;
-        if (projects.isNotEmpty && _selectedProjectId == null) {
-          _selectedProjectId = projects.first.projectId;
-        }
+        _selectedProjectId = currentProjectId;
         _selectedThreadId = currentThreadId;
         _messages = messages;
         _activities = activities;
@@ -212,33 +210,60 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   void _handleSendPrompt(String prompt) async {
-    if (_selectedProjectId == null) return;
+    // If no project selected yet, create or fallback to default
+    String projectId = _selectedProjectId ?? '';
+    if (projectId.isEmpty) {
+      if (_projects.isNotEmpty) {
+        projectId = _projects.first.projectId;
+      } else {
+        final newProj = await _serverService.openFolderAsProject(
+          'C:\\Users\\ctyja\\workspace\\j6code',
+        );
+        projectId = newProj?.projectId ?? 'proj_default';
+      }
+      setState(() => _selectedProjectId = projectId);
+    }
+
     setState(() => _isSending = true);
 
     String threadId = _selectedThreadId ?? '';
     if (threadId.isEmpty) {
+      final title = prompt.length > 35 ? '${prompt.substring(0, 35)}...' : prompt;
       final created = await _serverService.createThread(
-        projectId: _selectedProjectId!,
-        title: prompt.length > 35 ? '${prompt.substring(0, 35)}...' : prompt,
+        projectId: projectId,
+        title: title,
       );
-      threadId = created ?? 'thread_${DateTime.now().millisecondsSinceEpoch}';
+      threadId = created ?? 'th_${DateTime.now().millisecondsSinceEpoch}';
+      setState(() => _selectedThreadId = threadId);
     }
+
+    // Immediately show the user's message locally so it never vanishes
+    final optimisticMsg = J6Message(
+      messageId: 'opt_${DateTime.now().millisecondsSinceEpoch}',
+      threadId: threadId,
+      role: 'user',
+      text: prompt,
+      isStreaming: false,
+      createdAt: DateTime.now(),
+    );
+
+    setState(() {
+      _messages = [..._messages, optimisticMsg];
+    });
+    _scrollToBottom();
 
     final providerId = _selectedProvider?.id ?? 'grok';
     final modelSlug = _selectedModel?.slug ?? 'grok-build';
 
     await _serverService.sendPrompt(
       threadId: threadId,
-      projectId: _selectedProjectId!,
+      projectId: projectId,
       prompt: prompt,
       providerId: providerId,
       modelSlug: modelSlug,
     );
 
-    setState(() {
-      _isSending = false;
-      _selectedThreadId = threadId;
-    });
+    setState(() => _isSending = false);
 
     await _pollUpdates();
     _scrollToBottom();
