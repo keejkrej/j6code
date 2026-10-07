@@ -118,7 +118,34 @@ class J6ServerService {
     db.execute('''
       CREATE INDEX IF NOT EXISTS idx_activities_thread ON projection_thread_activities(thread_id, created_at);
     ''');
+
+    // Thread settlement (mirrors t3code migrations 033 + 043).
+    //   settled_override: NULL (automatic) | 'settled' (user settled) | 'active' (user un-settled)
+    //   settled_at:       when the thread was settled
+    //   unsettled_at:     when the thread was last brought back from settled
+    final threadColumns = db.select('PRAGMA table_info(projection_threads)').map((r) => r['name'] as String).toSet();
+    for (final column in const ['settled_override', 'settled_at', 'unsettled_at']) {
+      if (!threadColumns.contains(column)) {
+        db.execute('ALTER TABLE projection_threads ADD COLUMN $column TEXT');
+      }
+    }
+    // Older databases predate the per-thread runtime mode (t3code RuntimeMode).
+    if (!threadColumns.contains('runtime_mode')) {
+      db.execute("ALTER TABLE projection_threads ADD COLUMN runtime_mode TEXT DEFAULT 'full-access'");
+    }
+
+    // Files/images attached to a user message: JSON list of
+    // {name, path, mimeType, sizeBytes} (t3code ChatAttachment).
+    final messageColumns =
+        db.select('PRAGMA table_info(projection_thread_messages)').map((r) => r['name'] as String).toSet();
+    if (!messageColumns.contains('attachments_json')) {
+      db.execute('ALTER TABLE projection_thread_messages ADD COLUMN attachments_json TEXT');
+    }
   }
+
+  /// Where attachment copies live so transcripts keep rendering them even if
+  /// the original file moves.
+  static final String attachmentsDir = '$j6Dir\\attachments';
 
   Future<void> connect() async {
     J6Logger.info('Initializing independent embedded J6 engine and local storage...');
@@ -318,12 +345,17 @@ class J6ServerService {
   Future<List<J6Thread>> fetchThreads(String? projectId) async {
     try {
       final db = _getDb();
+      // A streaming assistant message means a run is live. Bounded in time so a
+      // crashed run (stuck is_streaming = 1) can't block settling forever —
+      // same idea as t3code's QUEUED_TURN_START_GRACE_MS.
+      const runningExpr = "EXISTS(SELECT 1 FROM projection_thread_messages m WHERE m.thread_id = t.thread_id "
+          "AND m.is_streaming = 1 AND m.created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 minutes')) AS is_running";
       final results = projectId != null
           ? db.select(
-              'SELECT * FROM projection_threads WHERE project_id = ? ORDER BY updated_at DESC',
+              'SELECT t.*, $runningExpr FROM projection_threads t WHERE t.project_id = ? ORDER BY t.updated_at DESC',
               [projectId],
             )
-          : db.select('SELECT * FROM projection_threads ORDER BY updated_at DESC');
+          : db.select('SELECT t.*, $runningExpr FROM projection_threads t ORDER BY t.updated_at DESC');
 
       final List<J6Thread> list = [];
       for (final row in results) {
@@ -334,6 +366,11 @@ class J6ServerService {
           createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
           updatedAt: DateTime.tryParse(row['updated_at']?.toString() ?? '') ?? DateTime.now(),
           modelSelectionJson: row['model_selection_json']?.toString(),
+          settledOverride: row['settled_override']?.toString(),
+          settledAt: DateTime.tryParse(row['settled_at']?.toString() ?? ''),
+          unsettledAt: DateTime.tryParse(row['unsettled_at']?.toString() ?? ''),
+          isRunning: row['is_running'] == 1,
+          runtimeMode: RuntimeMode.fromId(row['runtime_mode']?.toString()),
         ));
       }
       return list;
@@ -360,6 +397,7 @@ class J6ServerService {
           text: row['text']?.toString() ?? '',
           isStreaming: row['is_streaming'] == 1,
           createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
+          attachments: J6Attachment.listFromJson(row['attachments_json']?.toString()),
         ));
       }
       return list;
@@ -428,6 +466,7 @@ class J6ServerService {
     required String title,
     String? providerId,
     String? modelSlug,
+    RuntimeMode runtimeMode = RuntimeMode.fullAccess,
   }) async {
     try {
       final id = "th_${DateTime.now().millisecondsSinceEpoch}_${(1000 + DateTime.now().microsecond % 9000)}";
@@ -440,8 +479,8 @@ class J6ServerService {
 
       final db = _getDb();
       db.execute(
-        'INSERT INTO projection_threads (thread_id, project_id, title, model_selection_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-        [id, projectId, title, jsonEncode(modelSelection), now, now],
+        'INSERT INTO projection_threads (thread_id, project_id, title, model_selection_json, runtime_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, projectId, title, jsonEncode(modelSelection), runtimeMode.id, now, now],
       );
 
       J6Logger.info('Created new thread: $id ("$title") in j6 database');
@@ -452,6 +491,87 @@ class J6ServerService {
     return null;
   }
 
+  /// t3code `thread.settle`: park a finished thread in the Settled shelf.
+  /// Refused while a run is live — blocked work must never hide behind a
+  /// settled override. Returns false when refused or on error.
+  Future<bool> settleThread(String threadId) async {
+    try {
+      final db = _getDb();
+      final threads = await fetchThreads(null);
+      final thread = threads.where((t) => t.threadId == threadId).firstOrNull;
+      if (thread == null || thread.isRunning) return false;
+      if (thread.settledOverride == 'settled') return true; // idempotent, keeps settled_at
+      final now = DateTime.now().toUtc().toIso8601String();
+      db.execute(
+        "UPDATE projection_threads SET settled_override = 'settled', settled_at = ?, unsettled_at = NULL WHERE thread_id = ?",
+        [now, threadId],
+      );
+      J6Logger.info('Settled thread $threadId');
+      return true;
+    } catch (e, stack) {
+      J6Logger.error('Error settling thread', e, stack);
+      return false;
+    }
+  }
+
+  /// t3code `thread.unsettle`: bring a settled thread back to the active list.
+  /// The 'active' override pins it there (it won't be auto-settled again).
+  Future<bool> unsettleThread(String threadId) async {
+    try {
+      final db = _getDb();
+      final now = DateTime.now().toUtc().toIso8601String();
+      db.execute(
+        "UPDATE projection_threads SET settled_override = 'active', settled_at = NULL, "
+        "unsettled_at = CASE WHEN settled_override = 'active' THEN unsettled_at ELSE ? END, "
+        "updated_at = CASE WHEN settled_override = 'active' THEN updated_at ELSE ? END "
+        'WHERE thread_id = ?',
+        [now, now, threadId],
+      );
+      J6Logger.info('Un-settled thread $threadId');
+      return true;
+    } catch (e, stack) {
+      J6Logger.error('Error un-settling thread', e, stack);
+      return false;
+    }
+  }
+
+  /// Persists the thread's runtime mode (composer access selector).
+  Future<void> setThreadRuntimeMode(String threadId, RuntimeMode mode) async {
+    try {
+      _getDb().execute('UPDATE projection_threads SET runtime_mode = ? WHERE thread_id = ?', [mode.id, threadId]);
+    } catch (e, stack) {
+      J6Logger.error('Error saving runtime mode', e, stack);
+    }
+  }
+
+  /// Copies attachments into the app's attachment store so the transcript
+  /// keeps working if the originals move.
+  List<J6Attachment> _storeAttachments(String messageId, List<J6Attachment> attachments) {
+    if (attachments.isEmpty) return const [];
+    final dir = Directory('$attachmentsDir\\$messageId')..createSync(recursive: true);
+    final stored = <J6Attachment>[];
+    for (final a in attachments) {
+      try {
+        final src = File(a.path);
+        if (!src.existsSync()) continue;
+        // Index prefix keeps same-named files from overwriting each other.
+        final dest = src.copySync('${dir.path}\\${stored.length}_${a.name}');
+        stored.add(J6Attachment(name: a.name, path: dest.path, mimeType: a.mimeType, sizeBytes: src.lengthSync()));
+      } catch (e) {
+        J6Logger.warn('Could not store attachment ${a.path}: $e');
+      }
+    }
+    return stored;
+  }
+
+  /// The CLIs take a plain prompt, so attachments are referenced by absolute
+  /// path; every agent can open them with its file/image viewing tool.
+  static String _promptWithAttachments(String prompt, List<J6Attachment> attachments) {
+    if (attachments.isEmpty) return prompt;
+    final lines = attachments.map((a) => '- ${a.path} (${a.isImage ? 'image' : a.mimeType})').join('\n');
+    return '$prompt\n\n<attachments>\nThe user attached these files. Open them with your file viewing tool before answering:\n$lines\n</attachments>';
+  }
+
   /// Sends a prompt and executes agent turn through native embedded orchestration
   Future<bool> sendPrompt({
     required String threadId,
@@ -459,6 +579,8 @@ class J6ServerService {
     required String prompt,
     required String providerId,
     required String modelSlug,
+    RuntimeMode runtimeMode = RuntimeMode.fullAccess,
+    List<J6Attachment> attachments = const [],
   }) async {
     try {
       final db = _getDb();
@@ -467,10 +589,28 @@ class J6ServerService {
       final asstMsgId = "msg_asst_${DateTime.now().millisecondsSinceEpoch}";
       final turnId = "turn_${DateTime.now().millisecondsSinceEpoch}";
 
-      // 1. Persist user message in SQLite
+      // 0. A new turn re-engages the thread: clear any settle override so it
+      //    returns to the active list (mirrors t3code's turn-start handling).
       db.execute(
-        'INSERT INTO projection_thread_messages (message_id, thread_id, role, text, is_streaming, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        [userMsgId, threadId, 'user', prompt, 0, now],
+        'UPDATE projection_threads SET settled_override = NULL, settled_at = NULL, '
+        "unsettled_at = CASE WHEN settled_override = 'settled' THEN ? ELSE unsettled_at END, "
+        'updated_at = ? WHERE thread_id = ?',
+        [now, now, threadId],
+      );
+
+      // 1. Persist user message (and its attachments) in SQLite
+      final stored = _storeAttachments(userMsgId, attachments);
+      db.execute(
+        'INSERT INTO projection_thread_messages (message_id, thread_id, role, text, is_streaming, created_at, attachments_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [
+          userMsgId,
+          threadId,
+          'user',
+          prompt,
+          0,
+          now,
+          stored.isEmpty ? null : jsonEncode(stored.map((a) => a.toJson()).toList()),
+        ],
       );
 
       // 2. Insert placeholder assistant message with is_streaming = 1
@@ -510,9 +650,11 @@ class J6ServerService {
         turnId: turnId,
         asstMsgId: asstMsgId,
         workspaceRoot: workspaceRoot,
-        prompt: prompt,
+        prompt: _promptWithAttachments(prompt, stored),
         providerId: providerId,
         modelSlug: modelSlug,
+        runtimeMode: runtimeMode,
+        attachments: stored,
         existingConversationId: conversationId,
       );
 
@@ -523,6 +665,58 @@ class J6ServerService {
     }
   }
 
+  /// Maps a t3code runtime mode onto each CLI's headless permission flags.
+  /// Headless runs can't prompt, so "ask" modes auto-deny the risky action;
+  /// the denial is recorded as an `approval.denied` activity the UI can
+  /// approve-and-retry.
+  static List<String> _permissionArgs(String providerId, RuntimeMode mode) {
+    switch (providerId) {
+      case 'antigravity':
+        return switch (mode) {
+          RuntimeMode.fullAccess => ['--dangerously-skip-permissions'],
+          RuntimeMode.autoAcceptEdits => ['--mode', 'accept-edits'],
+          // agy has no classifier mode: "others still ask".
+          RuntimeMode.auto || RuntimeMode.approvalRequired => const [],
+        };
+      case 'grok':
+        return switch (mode) {
+          RuntimeMode.fullAccess => ['--always-approve'],
+          RuntimeMode.autoAcceptEdits => ['--permission-mode', 'acceptEdits'],
+          RuntimeMode.auto => ['--permission-mode', 'auto'],
+          RuntimeMode.approvalRequired => ['--permission-mode', 'default'],
+        };
+      case 'opencode':
+        return mode == RuntimeMode.fullAccess ? ['--auto'] : const [];
+    }
+    return const [];
+  }
+
+  /// Run executables directly when we resolved a full path; going through
+  /// cmd.exe would mangle multi-line prompts.
+  static bool _needsShell(String exe) => !exe.contains('\\') && !exe.contains('/');
+
+  void _recordDeniedActions({
+    required Database db,
+    required String threadId,
+    required String turnId,
+    required List<String> actions,
+  }) {
+    if (actions.isEmpty) return;
+    final now = DateTime.now().toUtc().toIso8601String();
+    db.execute(
+      'INSERT INTO projection_thread_activities (activity_id, thread_id, turn_id, kind, summary, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [
+        'act_denied_${DateTime.now().microsecondsSinceEpoch}',
+        threadId,
+        turnId,
+        'approval.denied',
+        'Approval needed: ${actions.join(', ')}',
+        jsonEncode({'deniedActions': actions}),
+        now,
+      ],
+    );
+  }
+
   void _runAgentProcess({
     required String threadId,
     required String turnId,
@@ -531,6 +725,8 @@ class J6ServerService {
     required String prompt,
     required String providerId,
     required String modelSlug,
+    RuntimeMode runtimeMode = RuntimeMode.fullAccess,
+    List<J6Attachment> attachments = const [],
     String? existingConversationId,
   }) async {
     final db = _getDb();
@@ -546,7 +742,7 @@ class J6ServerService {
           modelSlug,
           '--output-format',
           'stream-json',
-          '--dangerously-skip-permissions',
+          ..._permissionArgs(providerId, runtimeMode),
         ];
 
         if (existingConversationId != null && existingConversationId.isNotEmpty) {
@@ -558,7 +754,7 @@ class J6ServerService {
           agyPath,
           args,
           workingDirectory: workspaceRoot,
-          runInShell: true,
+          runInShell: _needsShell(agyPath),
         );
 
         process.stdout
@@ -593,7 +789,7 @@ class J6ServerService {
           modelSlug,
           '--output-format',
           'streaming-json',
-          '--always-approve',
+          ..._permissionArgs(providerId, runtimeMode),
         ];
 
         if (existingConversationId != null && existingConversationId.isNotEmpty) {
@@ -605,7 +801,7 @@ class J6ServerService {
           grokPath,
           args,
           workingDirectory: workspaceRoot,
-          runInShell: true,
+          runInShell: _needsShell(grokPath),
         );
 
         process.stdout
@@ -631,7 +827,9 @@ class J6ServerService {
           prompt,
           '-m',
           modelSlug,
-          '--auto',
+          ..._permissionArgs(providerId, runtimeMode),
+          // opencode can attach files natively as well.
+          for (final a in attachments) ...['-f', a.path],
         ];
 
         J6Logger.info('Launching OpenCode process: $opencodePath in $workspaceRoot');
@@ -639,7 +837,7 @@ class J6ServerService {
           opencodePath,
           args,
           workingDirectory: workspaceRoot,
-          runInShell: true,
+          runInShell: _needsShell(opencodePath),
         );
 
         process.stdout
@@ -748,6 +946,19 @@ class J6ServerService {
 
       if (event == 'result') {
         final res = json['result'] as Map<String, dynamic>?;
+        final denied = res?['denied_actions'];
+        if (denied is List && denied.isNotEmpty) {
+          _recordDeniedActions(
+            db: db,
+            threadId: threadId,
+            turnId: turnId,
+            actions: denied
+                .whereType<Map>()
+                .map((d) => (d['display_name'] ?? d['action'] ?? 'action').toString())
+                .toSet()
+                .toList(),
+          );
+        }
         if (res != null && res['response'] != null && assistantBuffer.isEmpty) {
           assistantBuffer.write(res['response'].toString());
           db.execute(
