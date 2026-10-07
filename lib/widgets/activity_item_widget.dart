@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../theme/app_theme.dart';
 import '../models/j6_entities.dart';
 
@@ -106,92 +107,73 @@ class _ActivityGroupWidgetState extends State<ActivityGroupWidget> {
   @override
   Widget build(BuildContext context) {
     final count = widget.activities.length;
-    final lastActivity = widget.activities.last;
-    final timeStr = '${lastActivity.createdAt.hour.toString().padLeft(2, '0')}:${lastActivity.createdAt.minute.toString().padLeft(2, '0')}';
+    final running = widget.activities.any((a) {
+      final s = a.payload['status']?.toString() ?? 'completed';
+      return s == 'running' || s == 'inProgress' || s == 'in_progress';
+    });
 
     String title;
     IconData icon;
-    Color iconColor;
 
     switch (widget.groupType) {
       case 'command':
-        title = count == 1 ? 'Ran 1 command' : 'Ran $count commands';
-        icon = Icons.terminal_rounded;
-        iconColor = const Color(0xFF22C55E);
+        title = running ? 'Running command' : (count == 1 ? 'Ran 1 command' : 'Ran $count commands');
+        icon = LucideIcons.terminal;
         break;
       case 'read':
         title = count == 1 ? 'Read 1 file' : 'Read $count files';
-        icon = Icons.description_outlined;
-        iconColor = const Color(0xFF60A5FA);
+        icon = LucideIcons.fileText;
         break;
       case 'edit':
-        title = count == 1 ? 'Changed 1 file' : 'Changed $count files';
-        icon = Icons.edit_note_rounded;
-        iconColor = const Color(0xFFA78BFA);
+        title = count == 1 ? 'Edited 1 file' : 'Edited $count files';
+        icon = LucideIcons.penLine;
         break;
       default:
-        title = count == 1 ? widget.activities.first.summary : '$count tool activities';
-        icon = Icons.handyman_outlined;
-        iconColor = AppTheme.accent;
+        title = count == 1 ? widget.activities.first.summary : 'Used $count tools';
+        icon = LucideIcons.wrench;
     }
 
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 24),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppTheme.borderSubtle),
-      ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Header row (collapsible toggle)
-          InkWell(
-            onTap: () => setState(() => _isExpanded = !_isExpanded),
-            borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              child: Row(
-                children: [
-                  Icon(
-                    _isExpanded ? Icons.keyboard_arrow_down_rounded : Icons.keyboard_arrow_right_rounded,
-                    size: 16,
-                    color: AppTheme.textMuted,
-                  ),
-                  const SizedBox(width: 6),
-                  Icon(icon, size: 15, color: iconColor),
-                  const SizedBox(width: 8),
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w500,
-                      color: AppTheme.textPrimary,
+          Align(
+            alignment: Alignment.centerLeft,
+            child: InkWell(
+              onTap: () => setState(() => _isExpanded = !_isExpanded),
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, size: 15, color: context.t3.mutedForeground),
+                    const SizedBox(width: 8),
+                    Text(title, style: TextStyle(fontSize: 13.5, color: context.t3.mutedForeground)),
+                    const SizedBox(width: 4),
+                    Icon(
+                      _isExpanded ? LucideIcons.chevronDown : LucideIcons.chevronRight,
+                      size: 16,
+                      color: context.t3.faint,
                     ),
-                  ),
-                  const Spacer(),
-                  Text(
-                    timeStr,
-                    style: const TextStyle(
-                      fontSize: 10.5,
-                      color: AppTheme.textMuted,
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
-
-          // Expanded items list
-          if (_isExpanded) ...[
-            const Divider(height: 1, color: AppTheme.borderSubtle),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
+          if (_isExpanded)
+            Container(
+              margin: const EdgeInsets.only(left: 9, top: 2, bottom: 6),
+              padding: const EdgeInsets.only(left: 14),
+              decoration: BoxDecoration(
+                border: Border(left: BorderSide(color: context.t3.input, width: 1)),
+              ),
               child: Column(
-                children: widget.activities.map((act) => _buildDetailItem(act)).toList(),
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: widget.activities.map(_buildDetailItem).toList(),
               ),
             ),
-          ],
         ],
       ),
     );
@@ -199,42 +181,43 @@ class _ActivityGroupWidgetState extends State<ActivityGroupWidget> {
 
   Widget _buildDetailItem(J6Activity activity) {
     final status = activity.payload['status']?.toString() ?? 'completed';
-    final isDone = status == 'completed';
+    final failed = status == 'failed' || status == 'error';
     final fullCommand = ToolActivityHelper.extractCleanFullCommand(activity);
     final primaryPath = ToolActivityHelper.extractPrimaryPath(activity);
+    final isCommand = widget.groupType == 'command';
+    final displayContent = isCommand ? fullCommand : (primaryPath.isNotEmpty ? primaryPath : fullCommand);
 
-    final displayContent = widget.groupType == 'command'
-        ? fullCommand
-        : (primaryPath.isNotEmpty ? primaryPath : fullCommand);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            margin: const EdgeInsets.only(top: 3),
-            width: 6,
-            height: 6,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: isDone ? const Color(0xFF22C55E) : const Color(0xFF6366F1),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: SelectableText(
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: isCommand
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                color: context.t3.codeBackground,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: context.t3.border),
+              ),
+              child: SelectableText(
+                '\$ $displayContent',
+                style: TextStyle(
+                  fontFamily: AppTheme.monoFont,
+                  fontFamilyFallback: AppTheme.monoFallback,
+                  fontSize: 12,
+                  height: 1.45,
+                  color: failed ? context.t3.error : context.t3.foregroundSubtle,
+                ),
+              ),
+            )
+          : SelectableText(
               displayContent,
               style: TextStyle(
-                fontFamily: widget.groupType == 'command' ? 'Consolas, monospace' : null,
-                fontSize: 11.5,
-                height: 1.4,
-                color: AppTheme.textSecondary,
+                fontFamily: AppTheme.monoFont,
+                fontFamilyFallback: AppTheme.monoFallback,
+                fontSize: 12,
+                height: 1.45,
+                color: failed ? context.t3.error : context.t3.mutedForeground,
               ),
             ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -252,98 +235,28 @@ class ActivityItemWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     final payload = activity.payload;
     final itemType = payload['itemType']?.toString() ?? '';
-    final status = payload['status']?.toString() ?? '';
     final title = payload['title']?.toString() ?? activity.summary;
     final fullCommand = ToolActivityHelper.extractCleanFullCommand(activity);
-    final provider = payload['provider']?.toString() ?? '';
-    final model = payload['model']?.toString() ?? '';
-
-    final isCommand = itemType == 'command_execution' || fullCommand.isNotEmpty;
+    final isCommand = itemType == 'command_execution' || itemType == 'command';
     final isDispatch = itemType == 'prompt_dispatch';
-    final isDone = status == 'completed';
 
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 24),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppTheme.borderSubtle),
-      ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 2),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Icon(
-            isCommand
-                ? Icons.terminal_rounded
-                : (isDispatch ? Icons.bolt_rounded : Icons.handyman_outlined),
+            isCommand ? LucideIcons.terminal : (isDispatch ? LucideIcons.zap : LucideIcons.wrench),
             size: 15,
-            color: isDone ? AppTheme.success : AppTheme.accent,
+            color: context.t3.mutedForeground,
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: AppTheme.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: isDone
-                            ? AppTheme.success.withAlpha(30)
-                            : AppTheme.accent.withAlpha(30),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        (status.isNotEmpty ? status : 'COMPLETED').toUpperCase(),
-                        style: TextStyle(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w700,
-                          color: isDone ? AppTheme.success : AppTheme.accent,
-                        ),
-                      ),
-                    ),
-                    if (provider.isNotEmpty) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: AppTheme.surfaceHover,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          '$provider ($model)',
-                          style: const TextStyle(
-                            fontSize: 9,
-                            color: AppTheme.textMuted,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                if (fullCommand.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  SelectableText(
-                    fullCommand,
-                    style: const TextStyle(
-                      fontFamily: 'Consolas, monospace',
-                      fontSize: 11.5,
-                      color: AppTheme.textSecondary,
-                    ),
-                  ),
-                ],
-              ],
+            child: Text(
+              fullCommand.isNotEmpty && fullCommand != title ? '$title · $fullCommand' : title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 13.5, color: context.t3.mutedForeground),
             ),
           ),
         ],
